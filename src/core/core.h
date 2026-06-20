@@ -24,12 +24,12 @@ of unstructured binary data stored as a single unit.
 
 
 typedef struct {
-  uint8_t data[16777216]; // = STANDART_DATAASIZE
   uint64_t used;
+  uint8_t data[];  //you can use STANDART_DATASIZE
 } BStore; // Blob Store
 
 typedef struct {
-    uint64_t sddr; //offset blob
+    uint64_t addr; //offset blob
     uint64_t size;
 } BEntry;
 
@@ -45,14 +45,35 @@ typedef struct {
 
 typedef struct {
     BStore store;
-    BEntry entries[STANDART_BLOB];
     uint_fast64_t count;
     WALEntry wal[STANDART_WALSIZE / sizeof(WALEntry)];
 
     int data_fd;
     int wal_fd;
     int auto_save_sec;
+
+    BEntry entries[]; // you can use STANDART_BLOB
 } Core;
+
+//--Allocator--
+
+typedef union {
+    BStore data;
+    size_t free;
+} Slot;
+
+typedef struct {
+    Slot *mem_pool;
+    size_t capacity;
+    size_t next_free;
+} Arena;
+
+typedef struct {
+    char *type[26];       // file extension, such as gz, bat, obj and etc...
+    uint64_t *addr_buff;  // address of the array of sizes of allocated memory chunks
+    uint64_t *addr_addr;  // connection to other data or metadata through links
+    size_t count;         // counter objects
+} Spec;
 
 //-- API --
 
