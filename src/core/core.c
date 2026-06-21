@@ -1,7 +1,7 @@
 #include "core.h"
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdlib.h>  // binsearch and etc...
+#include <stdlib.h>
 #include <stddef.h>  //macro (NULL) and support type(size_t)
 #include <string.h>
 #include <signal.h>  //debug
@@ -57,6 +57,31 @@ static void apply_wal(Core *core, WALEntry *wal) {
 
 // -- API --
 void core_init(Core *core, const char *data_path, const char *wal_path) {
+    memset(core, 0, sizeof(Core));
 
+    // open file
+    core->data_fd = open(data_path, O_RDWR | O_CREAT | O_SYNC, 0644);
+    core->wal_fd = open(wal_path, O_RDWR | O_CREAT | O_SYNC, 0644);
+    /*
+     *  O_RDWR: Opens a file for reading and writing.
+     *  O_CREAT: Creates a file if it does not already exist.
+     *  0644: Permissions (owner: read/write, group/others: read-only)
+     *  O_SYNC: Blocks the write() operation until the data is physically written to the hard drive or SSD.
+     */
+
+    if (core->data_fd >= 0) {
+        struct stat st;
+        fstat(core->data_fd, &st);
+        if (st.st_size > 0) {
+            pread(core->data_fd, &core->count, sizeof(uint64_t), 0);
+            pread(core->data_fd, &core->entries, sizeof(BEntry) * core->count,
+                  sizeof(uint64_t));
+            core->store.used =
+                st.st_size - sizeof(uint64_t) - sizeof(BEntry) * core->count;
+            pread(core->data_fd, core->store.data, core->store.used,
+                  sizeof(uint64_t) + sizeof(BEntry) * core->count);
+        }
+
+    }
 
 }

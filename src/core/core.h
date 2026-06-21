@@ -45,7 +45,7 @@ typedef struct {
 
 typedef struct {
     BStore store;
-    uint_fast64_t count;
+    uint_fast64_t count; // need for fast read and metrics
     WALEntry wal[STANDART_WALSIZE / sizeof(WALEntry)];
 
     int data_fd;
@@ -56,24 +56,6 @@ typedef struct {
 } Core;
 
 //--Allocator--
-
-typedef union {
-    BStore data;
-    size_t free;
-} Slot;
-
-typedef struct {
-    Slot *mem_pool;
-    size_t capacity;
-    size_t next_free;
-} Arena;
-
-typedef struct {
-    char *type[26];       // file extension, such as gz, bat, obj and etc...
-    uint64_t *addr_buff;  // address of the array of sizes of allocated memory chunks
-    uint64_t *addr_addr;  // connection to other data or metadata through links
-    size_t count;         // counter objects
-} Spec;
 
 //-- API --
 
