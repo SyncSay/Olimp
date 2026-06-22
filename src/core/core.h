@@ -45,7 +45,8 @@ typedef struct {
 
 typedef struct {
     BStore store;
-    uint_fast64_t count; // need for fast read and metrics
+    uint64_t count; // need for fast read and metrics
+    uint64_t wal_count;
     WALEntry wal[STANDART_WALSIZE / sizeof(WALEntry)];
 
     int data_fd;

@@ -1,4 +1,5 @@
 #include "core.h"
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -81,7 +82,36 @@ void core_init(Core *core, const char *data_path, const char *wal_path) {
             pread(core->data_fd, core->store.data, core->store.used,
                   sizeof(uint64_t) + sizeof(BEntry) * core->count);
         }
-
     }
 
+    if (core->wal_fd >= 0) {
+        struct stat st;
+        fstat(core->wal_fd, &st);
+        uint64_t wal_enties = st.st_size / sizeof(WALEntry);
+        // i want add OpenMP, but will stack overflow (I think)
+        for (uint64_t i = 0; i < wal_enties; i++) {
+            WALEntry w;
+            pread(core->wal_fd, &w, sizeof(WALEntry), i * sizeof(WALEntry));
+            apply_wal(core, &w);
+        }
+
+        ftruncate(core->wal_fd, 0); //clean WAL
+    }
+
+    core->wal_count = 0;
+    core->auto_save_sec = 0;
+}
+
+void core_close(Core *core) {
+    core_save(core);
+    if (core->data_fd >= 0) {
+        close(core->data_fd); }
+    else {
+      perror("error with data file descriptor!");
+    };
+    if (core->wal_fd >= 0) {
+        close(core->wal_fd);
+    } else {
+        perror("error with wal file descriptor!");
+    }
 }
