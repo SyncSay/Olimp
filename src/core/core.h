@@ -56,13 +56,22 @@ typedef struct {
     BEntry entries[]; // you can use STANDART_BLOB
 } Core;
 
-//--Allocator--
+// -- continer for pthreads --
+typedef struct {
+    Core *core;
+    uint64_t idx;
+    uint64_t old_addr;
+    uint64_t old_size;
+    uint64_t new_addr;
+    uint64_t new_size;
+} Task;
+
 
 //-- API --
 
 void core_init(Core *core, const char *data_path, const char *wal_path);
 void core_close(Core *core);
-int core_put(Core *core, const void *data, uint64_t size); // retern blobs index
+int core_put(Core *core, const void *data, uint64_t size, uint64_t max_blob, uint64_t data_size); // retern blobs index
 void *core_get(Core *core, uint64_t idx,
                uint64_t *size); // retern blobs pointer
 void core_update(Core *core, uint64_t idx, const void *data, uint64_t size);

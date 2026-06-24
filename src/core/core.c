@@ -5,7 +5,8 @@
 #include <stdlib.h>
 #include <stddef.h>  //macro (NULL) and support type(size_t)
 #include <string.h>
-#include <signal.h>  //debug
+#include <signal.h> //debag
+#include<pthread.h>
 
 
 // work with file
@@ -41,6 +42,15 @@ void wal_write_entry(Core *core, uint64_t index, uint64_t old_addr,
         fsync(fd);
     } else {
         abort(); }   // overflow or division by 0 (usually for integers or floats, but this works too)
+}
+
+// Pthread func wal_write
+void *wal_write_entry_pth(void *arg) {
+    Task *T = (Task *)arg;
+    wal_write_entry(T->core, T->idx, T->old_addr, T->old_size, T->new_addr,
+                    T->old_size);
+    free(T);
+    return NULL;
 }
 
 static void apply_wal(Core *core, WALEntry *wal) {
@@ -114,4 +124,24 @@ void core_close(Core *core) {
     } else {
         perror("error with wal file descriptor!");
     }
+}
+
+int core_put(Core *core, const void *data, uint64_t size, uint64_t max_blob, uint64_t data_size) {
+  if (core->count >= max_blob)
+    return -1; // You can insert STANDART_BLOB instead of max_blob
+  if (core->store.used >= data_size)
+    return -1; // You can insert STANDART_DATASIZE instead of data_size
+
+  uint64_t addr = core->store.used;
+  memcpy(core->store.data + addr, data, size);
+  core->store.used += size;
+
+  uint64_t idx = core->count;
+  core->entries[idx].addr = addr;
+  core->entries[idx].size = size;
+  core->count++;
+
+  pthread_t thread_id;
+
+
 }
