@@ -44,7 +44,7 @@ typedef struct {
 
 
 typedef struct {
-    BStore store;
+    BStore* store;
     uint64_t count; // need for fast read and metrics
     uint64_t wal_count;
     WALEntry wal[STANDART_WALSIZE / sizeof(WALEntry)];
@@ -64,6 +64,7 @@ typedef struct {
     uint64_t old_size;
     uint64_t new_addr;
     uint64_t new_size;
+    bool is_old;
 } Task;
 
 
@@ -74,7 +75,7 @@ void core_close(Core *core);
 int core_put(Core *core, const void *data, uint64_t size, uint64_t max_blob, uint64_t data_size); // retern blobs index
 void *core_get(Core *core, uint64_t idx,
                uint64_t *size); // retern blobs pointer
-void core_update(Core *core, uint64_t idx, const void *data, uint64_t size);
+void core_update(Core *core, uint64_t idx, const void *data, uint64_t size, uint64_t data_size); // in data_size you can use STANDART_DATASIZE
 void core_delete(Core *core, uint64_t idx);
 void core_save(Core *core);
 void core_auto_save(Core *core, int sec);
