@@ -31,6 +31,7 @@ typedef struct {
 typedef struct {
     uint64_t addr; //offset blob
     uint64_t size;
+    bool deleted;
 } BEntry;
 
 typedef struct {
@@ -46,7 +47,9 @@ typedef struct {
 typedef struct {
     BStore* store;
     uint64_t count; // need for fast read and metrics
+    uint64_t live_count; // active blob
     uint64_t wal_count;
+    uint64_t dead_bytes;
     WALEntry wal[STANDARD_WALSIZE / sizeof(WALEntry)];
 
     // size data and blob

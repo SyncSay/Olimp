@@ -6,8 +6,9 @@
 #include <stdlib.h>
 #include <stddef.h>  //macro (NULL) and support type(size_t)
 #include <string.h>
-#include <signal.h> //debag
-#include <pthread.h>
+#include <signal.h>                           //debag
+#include <pthread.h>  //f
+
 
 
 // work with file
@@ -31,7 +32,7 @@ static void wal_write_entry(Core *restrict core, uint64_t index, uint64_t old_ad
                      uint64_t olde_size, uint64_t new_addr, uint64_t new_size,
                      bool is_old) {
     WALEntry *w;
-    w = &core->wal[core->count++];
+    w = &core->wal[core->wal_count++];
     w->index = index;
     w->old_address = old_addr;
     w->old_size = olde_size;
@@ -66,6 +67,62 @@ static void apply_wal(Core *restrict core, WALEntry *restrict wal) {
     }
     core->entries[idx].addr = wal->new_address;
     core->entries[idx].size = wal->new_size;
+    if (wal->new_size == 0) {
+        core->entries[idx].deleted = true; // blob has deleted
+    } else {
+        core->entries[idx].deleted = false; // no delete
+    }
+}
+
+// -- Compaction: remove deleted blobs and old data versions, reclaim space --
+static void compact(Core *restrict core) {
+    if (core->live_count == 0) {
+        // All blobs deleted — just reset everything
+        core->count = 0;
+        core->store->used = 0;
+        core->dead_bytes = 0;
+        core->wal_count = 0;
+        if (core->wal_fd >= 0) ftruncate(core->wal_fd, 0);
+        return;
+    }
+
+    // Temporary buffer for live data — worst case same size as current
+    uint8_t *new_data = malloc(core->store->used);
+    if (!new_data) return; // Not enough memory for compaction, skip and try later
+
+    uint64_t new_used = 0;
+    uint64_t write_idx = 0;
+
+    // Walk all entries, copy only alive blobs to new data area
+    for (uint64_t i = 0; i < core->count; i++) {
+        if (!core->entries[i].deleted) {
+            // Copy blob data to new compacted position
+            memcpy(new_data + new_used,
+                   core->store->data + core->entries[i].addr,
+                   core->entries[i].size);
+
+            // Compact entries array — shift alive entries left to fill gaps
+            if (write_idx != i) {
+                core->entries[write_idx] = core->entries[i];
+            }
+            core->entries[write_idx].addr = new_used;
+            new_used += core->entries[write_idx].size;
+            write_idx++;
+        }
+    }
+
+    // Replace old data with compacted version
+    memcpy(core->store->data, new_data, new_used);
+    core->store->used = new_used;
+    core->count = write_idx;
+    // live_count unchanged — all entries[0..count-1] are now alive
+    core->dead_bytes = 0; // No more wasted space
+
+    free(new_data);
+
+    // WAL is no longer needed — data file is consistent after compaction
+    core->wal_count = 0;
+    if (core->wal_fd >= 0) ftruncate(core->wal_fd, 0);
 }
 
 
@@ -118,6 +175,17 @@ Core *core_init(const char *restrict data_path, const char *restrict wal_path,
                 st.st_size - sizeof(uint64_t) - sizeof(BEntry) * core->count;
             pread(core->data_fd, core->store->data, core->store->used,
                   sizeof(uint64_t) + sizeof(BEntry) * core->count);
+
+            // Count live blobs and wasted bytes after loading from data file
+            core->live_count = 0;
+            core->dead_bytes = 0;
+            for (uint64_t i = 0; i < core->count; i++) {
+                if (!core->entries[i].deleted) {
+                    core->live_count++;
+                } else {
+                    core->dead_bytes += core->entries[i].size;
+                }
+            }
         }
     }
 
@@ -132,7 +200,18 @@ Core *core_init(const char *restrict data_path, const char *restrict wal_path,
             apply_wal(core, &w);
         }
 
-        ftruncate(core->wal_fd, 0); //clean WAL
+        ftruncate(core->wal_fd, 0); // clean WAL
+
+        // Recount live blobs and dead bytes after WAL recovery
+        core->live_count = 0;
+        core->dead_bytes = 0;
+        for (uint64_t i = 0; i < core->count; i++) {
+            if (!core->entries[i].deleted) {
+                core->live_count++;
+            } else {
+                core->dead_bytes += core->entries[i].size;
+            }
+        }
     }
 
     core->wal_count = 0;
@@ -149,19 +228,30 @@ void core_close(Core *core) {
 }
 
 int core_put(Core *restrict core, const void *data, uint64_t size) {
-  if (core->count >= core->max_blob)
+  if (core->live_count >= core->max_blob)
     return -1;
   if (core->store->used + size > core->data_size)
     return -1;
+
+  // Reuse a deleted slot if one exists, otherwise append to the end
+  uint64_t idx = core->count;
+  for (uint64_t i = 0; i < core->count; i++) {
+      if (core->entries[i].deleted) {
+          idx = i;
+          break;
+      }
+  }
 
   uint64_t addr = core->store->used;
   memcpy(core->store->data + addr, data, size);
   core->store->used += size;
 
-  uint64_t idx = core->count;
   core->entries[idx].addr = addr;
   core->entries[idx].size = size;
-  core->count++;
+  core->entries[idx].deleted = false;
+
+  if (idx == core->count) core->count++;
+  core->live_count++;
 
   // stream wrapper
   Task *restrict task = malloc(sizeof(Task));
@@ -182,16 +272,18 @@ int core_put(Core *restrict core, const void *data, uint64_t size) {
 void *core_get(Core *restrict core, uint64_t idx, uint64_t *size) {
   if (idx >= core->count)
       return NULL;
+  if (core->entries[idx].deleted == true)
+      return NULL;
   *size = core->entries[idx].size;
   return core->store->data + core->entries[idx].addr;
 }
 
-void core_update(Core *restrict core, uint64_t idx, const void *data,
-                 uint64_t size) {
 
 // simplified the function, added parameters to the Core structure.
-
+void core_update(Core *restrict core, uint64_t idx, const void *data, uint64_t size) {
   if (idx >= core->count)
+      return;
+  if (core->entries[idx].deleted)
       return;
 
   uint64_t old_addr = core->entries[idx].addr;
@@ -209,6 +301,9 @@ void core_update(Core *restrict core, uint64_t idx, const void *data,
   core->entries[idx].addr = new_addr;
   core->entries[idx].size = size;
 
+  // Old version is now wasted space
+  core->dead_bytes += old_size;
+
   pthread_t stream_id;
   Task *restrict task = malloc(sizeof(Task));  // like core_put
   task->core = core;
@@ -220,37 +315,44 @@ void core_update(Core *restrict core, uint64_t idx, const void *data,
   task->is_old = true;
   pthread_create(&stream_id, NULL, wal_write_entry_pth, task);
   pthread_detach(stream_id);
+
+  // Auto-compact if wasted space exceeds 20% of total used
+  if (core->dead_bytes > core->store->used / 5) {
+      compact(core);
+  }
   return;
 }
 
 void core_delete(Core *restrict core, uint64_t idx) {
   if (idx >= core->count)
       return;
+  if (core->entries[idx].deleted)
+      return;
+
+  // Save old metadata before marking as deleted (for WAL)
+  uint64_t old_addr = core->entries[idx].addr;
+  uint64_t old_size = core->entries[idx].size;
+
+  core->entries[idx].deleted = true;
+  core->live_count--;
+  core->dead_bytes += old_size; // Deleted blob is now wasted space
+
   pthread_t stream_id;
-  if (idx != core->count - 1) {
-      core->entries[idx] = core->entries[core->count - 1];
-      Task *restrict task = malloc(sizeof(Task));
-      task->core = core;
-      task->idx = idx;
-      task->old_addr = core->entries[core->count - 1].addr;
-      task->old_size = core->entries[core->count - 1].size;
-      task->new_addr = core->entries[core->count - 1].addr;
-      task->new_size = core->entries[core->count - 1].size;
-      task->is_old = true;
-      pthread_create(&stream_id, NULL, wal_write_entry_pth, task);
-      pthread_detach(stream_id);
-  }
-  core->count--;
   Task *restrict task = malloc(sizeof(Task));
   task->core = core;
-  task->idx = core->count;
-  task->old_addr = 0;
-  task->old_size = 0;
-  task->new_addr = 0;
+  task->idx = idx;
+  task->old_addr = old_addr;
+  task->old_size = old_size;
+  task->new_addr = 0;       // 0 mean delete
   task->new_size = 0;
-  task->is_old = false;
+  task->is_old = true;
   pthread_create(&stream_id, NULL, wal_write_entry_pth, task);
   pthread_detach(stream_id);
+
+  // Auto-compact if wasted space exceeds 20% of total used
+  if (core->dead_bytes > core->store->used / 5) {
+      compact(core);
+  }
   return;
 }
 
